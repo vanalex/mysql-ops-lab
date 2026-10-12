@@ -26,32 +26,24 @@ Point-in-time recovery = latest snapshot before the incident + binlogs replayed 
 The snapshot is taken from the replica and the binlogs come from the source; that works because GTIDs
 identify transactions globally, so already-applied ones are skipped on replay.
 
-## Layout
+## Services
 
-```
-Makefile                       entry point for every step
-kind-config.yaml               local Kubernetes cluster
-k8s/
-  00-namespace.yaml
-  10-secrets.example.yaml      copy to 10-secrets.yaml (git-ignored)
-  20-mysql-config.yaml         my.cnf + init script (server_id per pod)
-  21-mysql-statefulset.yaml    mysql-0 / mysql-1, MySQL 8.4 LTS
-  22-mysql-services.yaml       mysql (headless), mysql-primary, mysql-replica
-  30-seaweedfs.yaml            S3-compatible storage
-  31-create-bucket-job.yaml
-  40-redpanda-connect.yaml     write-load generator (scaled to 0 by default)
-  50-snapshot-cronjob.yaml     MySQL Shell dump -> S3
-  60-binlog-archiver.yaml      mysqlbinlog --stop-never + S3 sync
-  70-restore-target.yaml       throwaway MySQL for restore tests
-  71-restore-snapshot-job.yaml util.loadDump from S3
-  72-pitr-replay-job.yaml      binlog replay up to a timestamp
-redpanda-connect/
-  rental-generator.yaml        generate -> sql_raw (CALL lab_new_rental)
-sql/
-  lab-procedures.sql           rental + payment in one transaction
-scripts/                       create users, set up replication, load Sakila, status, verify
-DRILLS.md                      failure scenarios to practice
-```
+All of them run in the `mysql-lab` namespace.
+
+| Service | What it does |
+|---|---|
+| **mysql-0** (`mysql-primary`) | The source. It takes every write and records each transaction in its binlog with a GTID. |
+| **mysql-1** (`mysql-replica`) | An async GTID replica of mysql-0, kept `super_read_only`. Snapshots are taken from it so the source isn't loaded. |
+| **mysql** (headless) | Gives each pod a stable DNS name (`mysql-0.mysql`, `mysql-1.mysql`), used for replication and by the scripts. |
+| **rental-generator** (Redpanda Connect) | Generates continuous write load by calling `lab_new_rental`, which inserts a rental and its payment in one transaction. It is scaled to 0 until `make load-start`. |
+| **SeaweedFS** | Local S3-compatible storage. It holds `s3://mysql-backups/` with `snapshots/<ts>/` and `binlogs/`. A one-off job creates the bucket. |
+| **mysql-snapshot** (CronJob) | Every 6 hours, runs a MySQL Shell `util.dumpInstance` of the replica and uploads it to `snapshots/<ts>/`. Run `make snapshot-now` to trigger one immediately. |
+| **binlog-archiver** | Streams binlogs from the source with `mysqlbinlog --stop-never` and syncs them to `binlogs/`. Together with a snapshot, this makes point-in-time recovery possible. |
+| **mysql-restore** | A throwaway MySQL server used only to test restores. It is never part of replication. |
+| **restore-snapshot** (Job) | Loads a chosen snapshot from S3 into mysql-restore with `util.loadDump` (`make restore`). |
+| **pitr-replay** (Job) | Replays archived binlogs into mysql-restore up to a given timestamp (`make pitr`). |
+
+The `Makefile` is the entry point for every step, `scripts/` has the bootstrap, status and verify helpers, and `DRILLS.md` lists the failure scenarios to practice.
 
 ## Prerequisites
 
