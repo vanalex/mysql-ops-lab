@@ -1,0 +1,46 @@
+# Template: `make pitr STOP="2026-10-12 14:46:59"` (UTC) replaces __STOP_DATETIME__.
+# Run AFTER restore-snapshot. Transactions already in the snapshot are skipped
+# automatically because their GTIDs are in the target's gtid_executed.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pitr-replay
+  namespace: mysql-lab
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: fetch-binlogs
+          image: amazon/aws-cli:latest   # TODO: pin
+          envFrom:
+            - secretRef: { name: mysql-lab-secrets }
+          env:
+            - { name: AWS_REGION, value: us-east-1 }
+          command: ["sh", "-c"]
+          args:
+            - aws --endpoint-url http://seaweedfs:8333 s3 sync s3://mysql-backups/binlogs/ /binlogs/ && ls -l /binlogs
+          volumeMounts:
+            - { name: binlogs, mountPath: /binlogs }
+      containers:
+        - name: replay
+          image: mysql:8.4
+          env:
+            - { name: STOP_DATETIME, value: "__STOP_DATETIME__" }
+          envFrom:
+            - secretRef: { name: mysql-lab-secrets }
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              # TODO: find the exact bad transaction and use --stop-position or --exclude-gtids instead
+              mysqlbinlog --stop-datetime="${STOP_DATETIME}" /binlogs/binlog.[0-9]* \
+                | mysql -h mysql-restore -uroot -p"${MYSQL_ROOT_PASSWORD}"
+              mysql -h mysql-restore -uroot -p"${MYSQL_ROOT_PASSWORD}" -e \
+                "SELECT @@gtid_executed; SELECT MAX(rental_date) FROM sakila.rental;"
+          volumeMounts:
+            - { name: binlogs, mountPath: /binlogs }
+      volumes:
+        - name: binlogs
+          emptyDir: {}

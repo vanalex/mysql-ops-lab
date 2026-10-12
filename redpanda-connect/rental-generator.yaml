@@ -1,0 +1,25 @@
+# Redpanda Connect pipeline: synthetic Sakila rentals -> MySQL source.
+# Sakila ID ranges: inventory 1-4581, customer 1-599, staff 1-2.
+http:
+  address: 0.0.0.0:4195          # /metrics for Prometheus later
+
+input:
+  generate:
+    interval: "${RENTAL_INTERVAL:200ms}"
+    mapping: |
+      root.inventory_id = random_int(min: 1, max: 4581)
+      root.customer_id  = random_int(min: 1, max: 599)
+      root.staff_id     = random_int(min: 1, max: 2)
+      root.amount       = random_int(min: 99, max: 1199) / 100
+
+output:
+  sql_raw:
+    driver: mysql
+    # Lab only: tls=skip-verify trusts MySQL's auto-generated certificate.
+    dsn: "labwriter:${WRITER_PASSWORD}@tcp(mysql-primary:3306)/sakila?tls=skip-verify"
+    query: "CALL lab_new_rental(?, ?, ?, ?)"
+    args_mapping: |
+      root = [ this.inventory_id, this.customer_id, this.staff_id, this.amount ]
+    max_in_flight: 4
+
+# TODO: switch input to a Redpanda topic (kafka_franz / redpanda input) once a broker is added

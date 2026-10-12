@@ -1,0 +1,40 @@
+# Throwaway MySQL used to prove backups restore. Data is ephemeral on purpose.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mysql-restore
+  namespace: mysql-lab
+  labels: { app: mysql-restore }
+spec:
+  containers:
+    - name: mysql
+      image: mysql:8.4
+      args:
+        - --server-id=999
+        - --gtid-mode=ON
+        - --enforce-gtid-consistency=ON
+        - --local-infile=ON          # required by util.loadDump
+        - --skip-name-resolve
+      env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom: { secretKeyRef: { name: mysql-lab-secrets, key: MYSQL_ROOT_PASSWORD } }
+      ports: [{ containerPort: 3306 }]
+      readinessProbe:
+        exec:
+          command: ["sh", "-c", "mysqladmin ping -h127.0.0.1 -uroot -p\"$MYSQL_ROOT_PASSWORD\""]
+        initialDelaySeconds: 20
+        periodSeconds: 10
+      volumeMounts:
+        - { name: data, mountPath: /var/lib/mysql }
+  volumes:
+    - name: data
+      emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-restore
+  namespace: mysql-lab
+spec:
+  selector: { app: mysql-restore }
+  ports: [{ port: 3306 }]

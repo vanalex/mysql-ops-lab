@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-config
+  namespace: mysql-lab
+data:
+  base.cnf: |
+    [mysqld]
+    # --- Replication ---
+    gtid_mode                  = ON
+    enforce_gtid_consistency   = ON
+    log_bin                    = binlog
+    # Must comfortably exceed the binlog archiver's worst-case delay,
+    # otherwise PITR breaks with a gap in the binlog chain.
+    binlog_expire_logs_seconds = 259200     # 3 days
+    log_replica_updates        = ON
+    relay_log_recovery         = ON
+    replica_preserve_commit_order = ON
+
+    # --- Lab-sized resources ---
+    innodb_buffer_pool_size    = 256M
+    skip_name_resolve          = ON
+
+    # --- Observability ---
+    slow_query_log             = ON
+    long_query_time            = 1
+
+  # Runs in an init container: gives each pod a unique server_id and report_host.
+  # read_only / super_read_only are NOT set here (they would break first-boot init);
+  # scripts/setup-replication.sh sets them with SET PERSIST on the replica.
+  init-config.sh: |
+    #!/bin/sh
+    set -e
+    ORDINAL="${HOSTNAME##*-}"
+    cp /config/base.cnf /conf.d/base.cnf
+    cat > /conf.d/instance.cnf <<CNF
+    [mysqld]
+    server_id   = $((100 + ORDINAL))
+    report_host = ${HOSTNAME}.mysql
+    CNF
+    echo "Generated config for ${HOSTNAME} (server_id=$((100 + ORDINAL)))"

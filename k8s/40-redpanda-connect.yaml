@@ -1,0 +1,32 @@
+# Generates rentals + payments into Sakila on the source.
+# Config comes from redpanda-connect/rental-generator.yaml (see `make load-config`).
+# Uses the generate input + sql_raw output only: no mysql_cdc, so no enterprise license.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rental-generator
+  namespace: mysql-lab
+spec:
+  replicas: 0                 # `make load-start` scales to 1
+  selector:
+    matchLabels: { app: rental-generator }
+  template:
+    metadata:
+      labels: { app: rental-generator }
+    spec:
+      containers:
+        - name: connect
+          image: docker.redpanda.com/redpandadata/connect:latest   # TODO: pin
+          args: ["run", "/config/rental-generator.yaml"]
+          env:
+            - name: WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mysql-lab-secrets, key: WRITER_PASSWORD }
+            - { name: RENTAL_INTERVAL, value: "200ms" }   # lower = more write load
+          ports:
+            - { name: http, containerPort: 4195 }          # /metrics, /ready
+          volumeMounts:
+            - { name: config, mountPath: /config }
+      volumes:
+        - name: config
+          configMap: { name: rental-generator-config }

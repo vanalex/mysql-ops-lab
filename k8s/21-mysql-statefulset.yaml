@@ -1,0 +1,62 @@
+# mysql-0 = source, mysql-1 = replica (roles are set by scripts, not by Kubernetes).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: mysql-lab
+spec:
+  serviceName: mysql
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      initContainers:
+        - name: init-config
+          image: busybox:1.36
+          command: ["sh", "/config/init-config.sh"]
+          volumeMounts:
+            - { name: config, mountPath: /config }
+            - { name: conf,   mountPath: /conf.d }
+      containers:
+        - name: mysql
+          image: mysql:8.4          # 8.4 LTS
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: mysql-lab-secrets, key: MYSQL_ROOT_PASSWORD }
+          ports:
+            - { name: mysql, containerPort: 3306 }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/mysql }
+            - { name: conf, mountPath: /etc/mysql/conf.d }
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h127.0.0.1 -uroot -p\"$MYSQL_ROOT_PASSWORD\""]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h127.0.0.1 -uroot -p\"$MYSQL_ROOT_PASSWORD\""]
+            initialDelaySeconds: 90
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits:   { memory: 1Gi }
+      volumes:
+        - name: config
+          configMap: { name: mysql-config, defaultMode: 0755 }
+        - name: conf
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi

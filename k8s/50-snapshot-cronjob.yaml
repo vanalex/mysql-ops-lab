@@ -1,0 +1,49 @@
+# Logical snapshot with MySQL Shell, taken from the REPLICA, written straight to S3.
+# The dump's @.json records gtidExecuted, which is the starting point for PITR.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mysql-snapshot
+  namespace: mysql-lab
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: snapshot
+              image: mysql:8.4      # TODO: verify mysqlsh is in this image; else use a MySQL Shell image
+              env:
+                - { name: MYSQL_HOST,  value: mysql-replica }
+                - { name: S3_BUCKET,   value: mysql-backups }
+                - { name: S3_ENDPOINT, value: "http://seaweedfs:8333" }
+                - { name: AWS_REGION,  value: us-east-1 }
+                - name: BACKUP_PASSWORD
+                  valueFrom: { secretKeyRef: { name: mysql-lab-secrets, key: BACKUP_PASSWORD } }
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom: { secretKeyRef: { name: mysql-lab-secrets, key: AWS_ACCESS_KEY_ID } }
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom: { secretKeyRef: { name: mysql-lab-secrets, key: AWS_SECRET_ACCESS_KEY } }
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  TS=$(date -u +%Y%m%dT%H%M%SZ)
+                  echo "Snapshot -> s3://${S3_BUCKET}/snapshots/${TS}"
+                  mysqlsh --uri "backup@${MYSQL_HOST}:3306" --password="${BACKUP_PASSWORD}" --js -e "
+                    util.dumpInstance('snapshots/${TS}', {
+                      s3BucketName: '${S3_BUCKET}',
+                      s3EndpointOverride: '${S3_ENDPOINT}',
+                      threads: 4,
+                      consistent: true
+                    });"
+                  echo "Done: snapshots/${TS}"
+                  # TODO: retention (delete snapshots older than N days)
+                  # TODO: emit a metric / alert on failure

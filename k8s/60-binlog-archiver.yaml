@@ -1,0 +1,58 @@
+# Streams binlogs from the source continuously and syncs them to S3 every 30s.
+# Snapshot + these binlogs = point-in-time recovery.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: binlog-archiver
+  namespace: mysql-lab
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: binlog-archiver }
+  template:
+    metadata:
+      labels: { app: binlog-archiver }
+    spec:
+      containers:
+        - name: streamer
+          image: mysql:8.4
+          env:
+            - { name: SOURCE_HOST, value: mysql-primary }
+            - name: BINLOG_PASSWORD
+              valueFrom: { secretKeyRef: { name: mysql-lab-secrets, key: BINLOG_PASSWORD } }
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              cd /binlogs
+              # TODO: resume from the newest file already in S3 instead of the oldest on the server
+              FIRST=$(mysql -h"$SOURCE_HOST" -ubinlog_archiver -p"$BINLOG_PASSWORD" -N -e "SHOW BINARY LOGS" | head -1 | cut -f1)
+              echo "Streaming from ${FIRST}"
+              exec mysqlbinlog --read-from-remote-server --host="$SOURCE_HOST" \
+                --user=binlog_archiver --password="$BINLOG_PASSWORD" \
+                --raw --stop-never --connection-server-id=900 \
+                --result-file=/binlogs/ "$FIRST"
+              # TODO (failover drill): after promotion, binlog file names change on the new primary.
+          volumeMounts:
+            - { name: binlogs, mountPath: /binlogs }
+        - name: uploader
+          image: amazon/aws-cli:latest   # TODO: pin
+          envFrom:
+            - secretRef: { name: mysql-lab-secrets }
+          env:
+            - { name: AWS_REGION, value: us-east-1 }
+          command: ["sh", "-c"]
+          args:
+            - |
+              while true; do
+                # Re-uploads the active file as it grows, so RPO is roughly the sleep interval.
+                aws --endpoint-url http://seaweedfs:8333 s3 sync /binlogs s3://mysql-backups/binlogs/ --only-show-errors
+                sleep 30
+              done
+              # TODO: prune local files that are safely in S3
+          volumeMounts:
+            - { name: binlogs, mountPath: /binlogs }
+      volumes:
+        - name: binlogs
+          emptyDir: {}

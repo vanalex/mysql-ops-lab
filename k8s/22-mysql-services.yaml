@@ -1,0 +1,33 @@
+# Headless service: stable DNS names mysql-0.mysql, mysql-1.mysql
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: mysql-lab
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: mysql }
+  ports: [{ name: mysql, port: 3306 }]
+---
+# Writes go here. Failover drill: repoint this selector to the promoted pod.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-primary
+  namespace: mysql-lab
+spec:
+  selector:
+    statefulset.kubernetes.io/pod-name: mysql-0
+  ports: [{ name: mysql, port: 3306 }]
+---
+# Backups read from here, keeping load off the source.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-replica
+  namespace: mysql-lab
+spec:
+  selector:
+    statefulset.kubernetes.io/pod-name: mysql-1
+  ports: [{ name: mysql, port: 3306 }]

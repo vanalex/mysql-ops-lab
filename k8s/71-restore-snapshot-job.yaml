@@ -1,0 +1,35 @@
+# Template: `make restore SNAPSHOT=snapshots/<timestamp>` replaces __SNAPSHOT__.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: restore-snapshot
+  namespace: mysql-lab
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: restore
+          image: mysql:8.4
+          env:
+            - { name: SNAPSHOT,    value: "__SNAPSHOT__" }
+            - { name: S3_BUCKET,   value: mysql-backups }
+            - { name: S3_ENDPOINT, value: "http://seaweedfs:8333" }
+            - { name: AWS_REGION,  value: us-east-1 }
+          envFrom:
+            - secretRef: { name: mysql-lab-secrets }
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              mysqlsh --uri "root@mysql-restore:3306" --password="${MYSQL_ROOT_PASSWORD}" --js -e "
+                util.loadDump('${SNAPSHOT}', {
+                  s3BucketName: '${S3_BUCKET}',
+                  s3EndpointOverride: '${S3_ENDPOINT}',
+                  threads: 4,
+                  updateGtidSet: 'replace',   // restored server now 'knows' which GTIDs it has
+                  skipBinlog: true
+                });"
+              mysql -h mysql-restore -uroot -p"${MYSQL_ROOT_PASSWORD}" -e \
+                "SELECT @@gtid_executed; SELECT COUNT(*) AS rentals FROM sakila.rental;"
